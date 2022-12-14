@@ -1,0 +1,158 @@
+defpackage json/rpc : 
+  import core 
+  import collections 
+  import json 
+
+;==============================================================================
+;=============================== Common =======================================
+;==============================================================================
+public deftype Message
+public defmulti to-json (m:Message) -> JSON 
+
+public defn serialize (m:Message) : 
+  val s = to-json-string(to-json(m))
+  val content-length = "Content-Length: %_" % [length(s)]
+  val content-type   = "Content-Type: application/json"
+  to-string("%_\r\n%_\r\n\r\n%_" % [content-length, content-type, s])
+
+public defn request-or-response (obj:JObject) -> Request|Response : 
+  if get?(obj, "method") is String: 
+    Request(obj)
+  else:
+    Response(obj)
+
+;==============================================================================
+;============================== Requests ======================================
+;==============================================================================
+public defstruct Request <: Message:
+  obj: JObject
+  
+public defn jsonrpc (r:Request) :
+  obj(r)["jsonrpc"] as String
+  
+val REQUEST-IDS = to-seq(1000 to false)
+public defn id (r:Request) : 
+  val id? = get?(obj(r), "id")
+  match(id?): 
+    (d:Double): to-int(d)
+    (s:String): s 
+    (_:?): next(REQUEST-IDS) 
+
+public defn method (r:Request) :
+  obj(r)["method"] as String
+
+public defn params (r:Request) : 
+  get?(obj(r), "params")
+
+;==============================================================================
+;=========================== ResponseError ====================================
+;==============================================================================
+public defstruct ResponseError <: Message : 
+  obj : JObject
+
+public defn code? (r:ResponseError) -> False|Int :
+  val code = get?(obj(r), "code")
+  match(code:Double):
+    to-int(code)
+
+public defn message? (r:ResponseError) -> False|String : 
+  val message = get?(obj(r), "message")
+  match(message:String):
+    message
+
+public defn data? (r:ResponseError) -> False|JSON :
+  get?(obj(r), "data")
+
+public defn ResponseError (code:Int): 
+  ResponseError(JObject([
+    "code" => code
+  ]))
+
+public defn ResponseError (msg:String): 
+  ResponseError(JObject([
+    "code" => -1
+    "message" => msg
+  ]))
+
+public defn ResponseError (code:Int, msg:String): 
+  ResponseError(JObject([
+    "code" => code, 
+    "message" => msg
+  ]))
+
+;==============================================================================
+;=============================== Responses ====================================
+;==============================================================================
+public defstruct Response <: Message : 
+  obj:JObject 
+
+public defn Response (id?:False|Int|String, result?:False|JSON, error?:False|ResponseError) :
+  val obj = to-tuple $ cat-all $ [
+    [] when id? is False else ["id" => id?]
+    [] when error? is False else ["error" => to-json(error? as ResponseError)]
+    [] when result? is False else ["result" => result?]
+  ]
+  Response(JObject(obj))
+
+public defn id? (r:Response) : 
+  get?(obj(r), "id") as False|String|Int
+
+public defn result? (r:Response) -> False|JSON : 
+  get?(obj(r), "result")
+
+public defn error? (r:Response) -> False|ResponseError : 
+  val error = get?(obj(r), "error")
+  match(error:JObject):
+    ResponseError(error)
+
+
+public deftype RpcException <: Exception 
+public defmulti code (e:RpcException) -> Int
+public defmulti message (e:RpcException) -> ?
+
+
+#for (Error    in [ParseError, InvalidRequest, MethodNotFound, InvalidParams, InternalError, RequestFailed],
+      err-code in [-32700,     -32600,         -32601,         -32602,        -32603,        -32803]) : 
+  public defstruct Error <: RpcException : 
+    code:Int with: (as-method => true, default => err-code)
+    message:? with: (as-method => true)
+  with : 
+    printer => true
+
+public defn Response (id?: False|Int|String, e:Exception) : 
+  match(e:RpcException) : 
+    Response(id?, false, ResponseError(code(e), to-string(message(e))))
+  else :
+    val code = code(InternalError(false))
+    Response(id?, false, ResponseError(code, to-string(e)))
+
+;==============================================================================
+;=========================== Conversion =======================================
+;==============================================================================
+public defmethod to-json (r:Request): 
+  obj(r) 
+
+public defmethod to-json (r:ResponseError): 
+  obj(r)
+
+public defmethod to-json (r:Response): 
+  obj(r)
+
+;==============================================================================
+;============================= Printers =======================================
+;==============================================================================
+defmethod print (o:OutputStream, r:Request):
+  print(o, "Request(id:%_, method:%_, params:%_)" % [
+    id(r), method(r), params(r)
+  ])
+
+defmethod print (o:OutputStream, r:ResponseError) : 
+  print(o, "ResponseError(code?:%_, message?:%_, data?:%_)" % [
+    code?(r), message?(r), data?(r)
+  ])
+
+defmethod print (o:OutputStream, r:Response) : 
+  print(o, "Response(id?:%_, result?:%_, error?:%_" % [
+    id?(r), result?(r), error?(r)
+  ])
+

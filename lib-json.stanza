@@ -1,0 +1,168 @@
+#use-added-syntax(tests)
+defpackage json :
+  import core
+  import collections
+
+;============================================================
+;==================== Bindings ==============================
+;============================================================
+lostanza deftype cJSON :
+  next:ptr<cJSON>
+  prev:ptr<cJSON>
+  child:ptr<cJSON>
+  type:int
+  valuestring:ptr<byte>
+  valueint:int
+  valuedouble:double
+  string:ptr<byte>  
+extern cJSON_IsNull: ptr<cJSON> -> int
+extern cJSON_IsTrue: ptr<cJSON> -> int
+extern cJSON_IsFalse: ptr<cJSON> -> int
+extern cJSON_IsNumber: ptr<cJSON> -> int
+extern cJSON_IsString: ptr<cJSON> -> int
+extern cJSON_IsArray: ptr<cJSON> -> int
+extern cJSON_IsObject: ptr<cJSON> -> int
+extern cJSON_Parse: ptr<byte> -> ptr<cJSON>
+extern cJSON_Delete: ptr<cJSON> -> int
+extern cJSON_CreateNull: () -> ptr<cJSON>
+extern cJSON_CreateTrue: () -> ptr<cJSON>
+extern cJSON_CreateFalse: () -> ptr<cJSON>
+extern cJSON_CreateBool: int -> ptr<cJSON>
+extern cJSON_CreateNumber: double -> ptr<cJSON>
+extern cJSON_CreateString: ptr<byte> -> ptr<cJSON>
+extern cJSON_CreateArray: () -> ptr<cJSON>
+extern cJSON_CreateObject: () -> ptr<cJSON>
+extern cJSON_AddItemToArray: (ptr<cJSON>, ptr<cJSON>) -> int
+extern cJSON_AddItemToObject: (ptr<cJSON>, ptr<byte>, ptr<cJSON>) -> int
+extern cJSON_Print: ptr<cJSON> -> ptr<byte>
+extern cJSON_PrintUnformatted: ptr<cJSON> -> ptr<byte>
+extern cJSON_free: ptr<byte> -> int
+
+;============================================================
+;================= High Level Types =========================
+;============================================================
+public deftype JSON :
+  True <: JSON
+  False <: JSON
+  Double <: JSON
+  String <: JSON
+  Int    <: JSON  
+  Tuple<T> <: JSON
+
+public defstruct JNull <: JSON with:
+  printer => true
+  
+public defstruct JObject <: JSON & Seqable<KeyValue<String, JSON>> & Equalable:
+  entries: Tuple<KeyValue<String,JSON>>
+with:
+  printer => true
+
+;============================================================
+;===================== Convenience ==========================
+;============================================================
+
+public defn key? (o:JObject, k:String) :
+  any?({key(_) == k}, entries(o))
+
+public defn get?<?T> (o:JObject, k:String, default:?T) :
+  lookup?(entries(o), k, default)
+
+public defn get? (o:JObject, k:String) :
+  get?(o, k, false)
+  
+public defn get (o:JObject, k:String) : 
+  lookup(entries(o), k)
+
+public defstruct JSONParseException <: Exception 
+defmethod print (o:OutputStream, _:JSONParseException): 
+  print(o, "Invalid JSON.")
+
+public defmethod equal? (a: JObject, b: JObject) :
+  entries(a) == entries(b)
+
+defmethod to-seq (j:JObject): 
+  to-seq(entries(j))
+
+;============================================================
+;==================== Translation ===========================
+;============================================================
+
+lostanza defn translate (json:ptr<cJSON>) -> ref<JSON> :
+  if call-c cJSON_IsNull(json) :
+    return JNull()
+  else if call-c cJSON_IsTrue(json) :
+    return true
+  else if call-c cJSON_IsFalse(json) :
+    return false
+  else if call-c cJSON_IsNumber(json) :
+    return new Double{json.valuedouble}
+  else if call-c cJSON_IsString(json) :
+    return String(json.valuestring)
+  else if call-c cJSON_IsArray(json) :
+    val items = Vector<JSON>()
+    var item:ptr<cJSON> = json.child
+    while item != null :
+      add(items, translate(item))
+      item = item.next
+    return to-tuple(items)
+  else if call-c cJSON_IsObject(json) :
+    val items = Vector<KeyValue<String,JSON>>()
+    var item:ptr<cJSON> = json.child
+    while item != null :
+      add(items, KeyValue(String(item.string), translate(item)))
+      item = item.next
+    return JObject(to-tuple(items))
+  else :
+    throw(JSONParseException())
+    return JNull()
+
+lostanza defn translate (json:ref<JSON>) -> ptr<cJSON> :
+  match(json) :
+    (json:ref<JNull>) : return call-c cJSON_CreateNull()
+    (json:ref<True>) : return call-c cJSON_CreateTrue()
+    (json:ref<False>) : return call-c cJSON_CreateFalse()
+    (json:ref<Double>) : return call-c cJSON_CreateNumber(json.value)
+    (json:ref<String>) : return call-c cJSON_CreateString(addr!(json.chars))
+    (json:ref<Int>) : return call-c cJSON_CreateNumber(json.value as double)
+    (json:ref<Tuple>) :
+      val array = call-c cJSON_CreateArray()
+      val n = length(json).value
+      for (var i:int = 0, i < n, i = i + 1) :
+        val item = translate(get(json, new Int{i}))
+        call-c cJSON_AddItemToArray(array, item)
+      return array
+    (json:ref<JObject>) :
+      val obj = call-c cJSON_CreateObject()
+      val entries = entries(json)
+      val n = length(entries).value
+      for (var i:int = 0, i < n, i = i + 1) :
+        val entry = get(entries, new Int{i})
+        val key = key(entry)
+        val value = translate(value(entry))
+        call-c cJSON_AddItemToObject(obj, addr!(key.chars), value)
+      return obj
+
+;============================================================
+;================= High Level Commands ======================
+;============================================================
+
+public lostanza defn parse (str:ref<String>) -> ref<JSON> :
+  val cjson = call-c cJSON_Parse(addr!(str.chars))
+  val json = translate(cjson)
+  call-c cJSON_Delete(cjson)
+  return json
+
+public lostanza defn to-json-string (json:ref<JSON>, format?:ref<True|False>) -> ref<String> :
+  val cjson = translate(json)
+  var chars:ptr<byte>
+  if format? == true :
+    chars = call-c cJSON_Print(cjson)
+  else :
+    chars = call-c cJSON_PrintUnformatted(cjson)
+  call-c cJSON_Delete(cjson)
+  val str = String(chars)
+  call-c cJSON_free(chars)
+  return str
+
+public defn to-json-string (json:JSON) :
+  to-json-string(json, false)

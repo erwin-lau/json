@@ -1,0 +1,9 @@
+extern cJSON_IsArray
+extern cJSON_IsTrue
+extern cJSON_IsFalse
+extern cJSON_IsNull
+extern cJSON_IsObject
+extern cJSON_Delete
+extern cJSON_Parse
+extern cJSON_IsNumber
+extern cJSON_IsString
