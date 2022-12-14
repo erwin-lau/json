@@ -1,5 +1,7 @@
 package json defined-in "lib-json.stanza"
-package json/rpc defined-in "json-rpc.stanza"
-package json/tests defined-in "json-test.stanza"
 package json requires :
   ccfiles: "cJSON.c"
+
+build main:
+  inputs: json
+  o: "lib-json"
